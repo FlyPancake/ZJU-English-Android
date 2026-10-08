@@ -70,3 +70,14 @@ javac -encoding UTF-8 -d build-speech-tests src/com/kry/zjuenglish/SpeechControl
 java -cp build-speech-tests SpeechControllerTest
 ```
 
+## 来源与使用说明
+
+感谢 [Lucent-Snow/ZJU-English-dictation-tool](https://github.com/Lucent-Snow/ZJU-English-dictation-tool) 原项目和 [kryptonite309/ZJU-English-dictation-tool_kry-advanced](https://github.com/kryptonite309/ZJU-English-dictation-tool_kry-advanced) 项目。原项目的 README 还提到它参照了 e 志大英默写器。
+
+本项目仅供学习交流使用，主要面向浙江大学校内学生进行非商业共享。项目不会出售软件或词书，也没有商业使用计划。
+
+book2、book3 词书目前没有一份格式规范、可公开核验的书面授权。原项目仓库页面也没有明确的软件许可证声明，因此这里不为原项目代码或词书写入未经确认的许可证。非商业用途不能代替版权许可。如果原作者或相关权利人对仓库内容有疑问，请通过 Issues 联系；核实后会及时补充说明、调整范围或移除相关内容。
+
+## 反馈
+
+功能还在持续检查。如果你发现问题，请尽量说明操作步骤、预期结果和实际结果。可以通过 Issues 反馈，也欢迎提交 Pull Request。
