@@ -32,14 +32,6 @@
 
 卸载或清除应用数据会删除本地学习记录，请先导出备份。安装后首次使用建议只抽取 1–2 个词，确认手机的朗读和文件选择器可用。
 
-## 源码依据与使用范围
-
-- 源仓库：`https://github.com/kryptonite309/ZJU-English-dictation-tool_kry-advanced`
-- 源码提交：`5d9065339aa5a5b0ee27e07afae673c659ae7adc`
-- 主要参考：`Main.cs` 的 CSV / 例句规则、`StudyStore.cs` 的题型和复习设置、`NotebookStore.cs` 的错题迁移规则、`PracticeStore.cs` 和 `Pronunciation.cs` 的状态与语音功能。
-- 词性映射的 ECDICT MIT 许可全文保留在 `THIRD_PARTY_NOTICES.md`。
-- 音标来源：`https://github.com/skywind3000/ECDICT` 的 `ecdict.csv`，仅打包当前词书所需的音标子集。
-
 ## 本地构建
 
 需要 Windows PowerShell、JDK 17、Android SDK Platform 35 和 Build Tools 35.0.0。不需要 Gradle、Android Studio 或任何在线运行服务。
