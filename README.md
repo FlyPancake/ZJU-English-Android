@@ -1,6 +1,6 @@
 # 大英默写器 · Z 安卓移植版
 
-这是基于 [kryptonite309 的大英默写器] 制作的非官方 Android 移植版，朗读、保存和文件选择由原生 Android 接口实现；无需网页服务器。
+这是基于 [kryptonite309 的大英默写器](https://github.com/kryptonite309/ZJU-English-dictation-tool_kry-advanced) 制作的非官方 Android 移植版，朗读、保存和文件选择由原生 Android 接口实现；无需网页服务器。
 
 这个仓库保存源码，apk 文件通过 Releases 提供，仓库不包含任何人的学习记录。
 
