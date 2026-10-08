@@ -128,7 +128,7 @@ public final class MainActivity extends Activity {
                 Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
                 intent.setType("application/json");
                 intent.addCategory(Intent.CATEGORY_OPENABLE);
-                intent.putExtra(Intent.EXTRA_TITLE, "KRY-Android-" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new java.util.Date()) + ".json");
+                intent.putExtra(Intent.EXTRA_TITLE, "Z-Android-" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new java.util.Date()) + ".json");
                 startActivityForResult(intent, 1);
             });
         }

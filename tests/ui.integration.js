@@ -21,8 +21,11 @@ const server = http.createServer((request, response) => {
         page.on('pageerror', error => errors.push(error.message)); page.on('dialog', dialog => dialog.accept(dialog.type() === 'prompt' ? dialog.defaultValue() : undefined));
         await page.goto(`http://127.0.0.1:${server.address().port}/`);
         await page.getByText('今天，也前进一步。').waitFor();
+        assert.equal(await page.title(), '大英默写器 · Z');
+        assert.equal(await page.locator('header small').textContent(), 'Z · ANDROID');
         if (process.env.KRY_SCREENSHOT) await page.screenshot({path: process.env.KRY_SCREENSHOT, fullPage: false});
         await page.locator('header button').click();
+        assert.equal((await page.locator('#app').innerText()).includes('KRY'), false);
         await page.locator('#newCount').fill('1');
         await page.locator('summary').filter({hasText: '每日新学'}).click();
         await page.locator('#new-example').uncheck();
