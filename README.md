@@ -38,10 +38,6 @@
 - 词性映射的 ECDICT MIT 许可全文保留在 `THIRD_PARTY_NOTICES.md`。
 - 音标来源：`https://github.com/skywind3000/ECDICT` 的 `ecdict.csv`，仅打包当前词书所需的音标子集。
 
-## 验证范围
-
-已执行 Node 学习规则测试和 Chrome 手机尺寸界面集成测试，覆盖 CSV、词形、复现、错题门槛、进度恢复、撤销、设置、词本、导入和备份恢复。APK 通过 Android 官方签名工具的 v2 / v3 签名校验以及包名、启动入口、最低版本检查。
-
 ## 本地构建
 
 需要 Windows PowerShell、JDK 17、Android SDK Platform 35 和 Build Tools 35.0.0。不需要 Gradle、Android Studio 或任何在线运行服务。
