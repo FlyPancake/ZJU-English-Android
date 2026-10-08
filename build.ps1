@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$true)][string]$KeyStore,
     [string]$KeyAlias = 'kry-android',
     [string]$StorePassword = $env:KRY_STORE_PASSWORD,
-    [string]$Output = (Join-Path $PSScriptRoot '..\ZJU-English-Z-Android-v1.1.3.apk'),
+    [string]$Output = (Join-Path $PSScriptRoot '..\ZJU-English-Z-Android-v1.1.4.apk'),
     [string]$BuildDirectory = (Join-Path $PSScriptRoot '..\..\work\apk-build')
 )
 $ErrorActionPreference = 'Stop'

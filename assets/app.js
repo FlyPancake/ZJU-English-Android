@@ -5,6 +5,7 @@ const kinds = {new: '每日新学', review: '历史列表复习', problem: '错�
 const notebooks = {wrong: '错题本', prone: '易错本', mastered: '已掌握', priority: '优先学习', recent: '最近作答'};
 let state, catalog, words = {}, page = 'home', filter = 'wrong', search = '', pageLimit = 40;
 let undo = [], lastTick = performance.now(), lastSave = Date.now(), toastTimer, locked = false;
+let pendingWindowsImport = {};
 let licenseText = '';
 let speechSequence = 0;
 const speechRequests = new Map(), pendingAutomaticSpeech = new Set();
@@ -74,6 +75,7 @@ function render() {
     const views = {home, practice, notebook, stats, settings, session, licenses};
     element('app').innerHTML = (views[page] || home)();
     if (page === 'settings') element('app').lastElementChild.insertAdjacentHTML('beforeend', `<p>${button('licenses', '查看第三方数据许可')}</p>`);
+    if (page === 'settings') element('app').lastElementChild.insertAdjacentHTML('beforeend', `<h3>Windows 学习记录迁移</h3><p class="muted">先导出手机备份。依次选择 notebook_state.json 和 study_state.json，确认后替换当前安卓记录，并保留恢复前的本地快照。不是两端进度合并。</p><p>${button('windowsImport', '迁移 Windows 记录')}</p>`);
 }
 function metrics(items) { return `<div class="grid">${items.map(([value, label]) => `<div class="metric"><strong>${value}</strong><small>${label}</small></div>`).join('')}</div>`; }
 function home() {
@@ -116,7 +118,7 @@ function settings() {
         <section class="card"><h3>四模块独立题型设置</h3>${Object.entries(kinds).map(([kind, name]) => `<details ${kind === 'free' ? 'open' : ''}><summary>${name}</summary>${E.modes.map(mode => checkbox(`${kind}-${mode}`, names[mode], prefs.modules[kind].modes.includes(mode))).join('')}<label>题目顺序</label><select id="${kind}-order">${options([['sequential', '顺序'], ['unitRandom', '单元内随机'], ['bookRandom', '词书内随机']], prefs.modules[kind].order)}</select><label>题型先后顺序</label><select id="${kind}-taskOrder">${options([['example,dictation,spelling', '例句 → 听写 → 拼写'], ['spelling,example,dictation', '拼写 → 例句 → 听写'], ['dictation,example,spelling', '听写 → 例句 → 拼写'], ['example,spelling,dictation', '例句 → 拼写 → 听写'], ['spelling,dictation,example', '拼写 → 听写 → 例句'], ['dictation,spelling,example', '听写 → 拼写 → 例句']], prefs.modules[kind].taskOrder.join(','))}</select></details>`).join('')}</section>
         <section class="card"><h3>英语朗读</h3>${checkbox('autoSpeak', '新学首次自动朗读（填空 / 中译英仅手动）', prefs.autoSpeak)}<label>英语口音</label><select id="accent">${options([['US', '美式英语'], ['UK', '英式英语']], prefs.accent)}</select><label>语速 ${prefs.rate.toFixed(2)}</label><input id="rate" type="range" min="0.3" max="1.5" step="0.05" value="${prefs.rate}"><label>音量 ${Math.round(prefs.volume * 100)}%</label><input id="volume" type="range" min="0" max="1" step="0.05" value="${prefs.volume}"><p>${button('tts', '系统英语语音设置')}</p><p class="muted">新学预览每词自动朗读一次，回看和恢复不重复。例句填空、中译英及复现仅点击朗读时播放；听写仍自动播放。语音质量和离线能力由手机引擎决定，请安装英语语音包。手机音量键控制媒体音量。</p></section>
         <section class="card"><h3>外观</h3><label>主题</label><select id="theme">${options([['dark', '深色'], ['light', '浅色']], prefs.theme)}</select>${checkbox('background', '显示导入的壁纸 / 循环视频', prefs.background)}<label>面板不透明度</label><input id="opacity" type="range" min="50" max="100" value="${prefs.opacity}"><p>${button('background', '选择图片或视频')}${button('resetAppearance', '恢复默认外观')}</p></section>
-        <section class="card">${button('saveSettings', '保存全部设置', '', 'primary')}</section><section class="card"><h3>备份与恢复</h3><p class="muted">完整安卓备份包含进度、词本、设置和自定义词书，不包含壁纸文件。卸载应用会删除本地记录，请先导出。</p><div class="row">${button('export', '导出完整备份')}${button('import', '导入 / 恢复备份')}</div><p class="muted">每 10 分钟和提前结束时保存本地快照，最多保留 5 份。恢复前自动保留当前快照。</p>${state.backups.map((backup, index) => `<p>${button('restoreLocal', '恢复 ' + new Date(backup.time).toLocaleString('zh-CN'), String(index))}</p>`).join('')}</section><section class="card"><h3>关于这个安卓移植版</h3><p>基于原项目增强版的学习规则重新实现，内置原仓库 book2 / book3。支持 Android 8.0 及以上。</p><p class="muted">这是非官方安卓移植，不是 Windows 程序的直接封装。Windows 快捷键、多窗口及 GitHub 自动更新未移植；Windows 学习进度不能直接恢复，仅支持导入旧版 wrong_words.json 词条。</p><p class="muted">原仓库代码和词书没有明确的完整授权，请仅按来源说明用于个人学习，不作商业发布。词性数据来源 ECDICT，MIT 许可详见源码中的第三方说明。</p></section>`;
+        <section class="card">${button('saveSettings', '保存全部设置', '', 'primary')}</section><section class="card"><h3>备份与恢复</h3><p class="muted">完整安卓备份包含进度、词本、设置和自定义词书，不包含壁纸文件。卸载应用会删除本地记录，请先导出。</p><div class="row">${button('export', '导出完整备份')}${button('import', '导入 / 恢复备份')}</div><p class="muted">每 10 分钟和提前结束时保存本地快照，最多保留 5 份。恢复前自动保留当前快照。</p>${state.backups.map((backup, index) => `<p>${button('restoreLocal', '恢复 ' + new Date(backup.time).toLocaleString('zh-CN'), String(index))}</p>`).join('')}</section><section class="card"><h3>关于这个安卓移植版</h3><p>基于原项目增强版的学习规则重新实现，内置原仓库 book2 / book3。支持 Android 8.0 及以上。</p><p class="muted">这是非官方安卓移植，不是 Windows 程序的直接封装。Windows 快捷键、多窗口及 GitHub 自动更新未移植；支持转换 Windows study_state.json 和 notebook_state.json 后替换恢复；旧版 wrong_words.json 仅导入错题词条。</p><p class="muted">原仓库代码和词书没有明确的完整授权，请仅按来源说明用于个人学习，不作商业发布。词性数据来源 ECDICT，MIT 许可详见源码中的第三方说明。</p></section>`;
 }
 function diff(input, answer) {
     const entered = Array.from(input), expected = Array.from(answer);
@@ -317,6 +319,7 @@ async function action(name, value) {
         case 'background': if (window.Android) Android.importFile('background'); else toast('壁纸导入请在安卓应用中使用'); break;
         case 'resetAppearance': state.settings.theme = 'dark'; state.settings.background = false; state.settings.opacity = 94; persist(); appearance(); render(); break;
         case 'restoreLocal': if (confirm('恢复这份快照？当前数据会自动备份。')) restore(state.backups[Number(value)].data); break;
+        case 'windowsImport': pendingWindowsImport = {}; if (window.Android) Android.importFile('json'); else toast('请选择 Windows JSON 文件；浏览器预览不提供系统文件选择器'); break;
     }
 }
 function restore(text) {
@@ -346,7 +349,9 @@ window.nativeCSV = text => {
 };
 window.nativeImport = text => {
     try {
-        const data = JSON.parse(text);
+        const data = JSON.parse(text.replace(/^\uFEFF/, ''));
+        const windowsType = window.WindowsMigration.classify(data);
+        if (windowsType) { importWindows(data, windowsType); return; }
         if (Array.isArray(data)) {
             if (!data.every(word => word && typeof word.english === 'string' && typeof word.chinese === 'string')) throw Error('旧版错题文件格式不正确');
             if (!confirm(`导入 ${data.length} 条旧版错题？不会覆盖现有学习进度。`)) return;
@@ -360,6 +365,25 @@ window.nativeImport = text => {
         } else if (confirm('恢复这个安卓备份？当前进度将先保存为本地快照。')) restore(text);
     } catch (error) { toast('导入失败，原数据未覆盖：' + error.message); }
 };
+function importWindows(data, type) {
+    if (type === 'bundle') pendingWindowsImport = {study: data.study, notebook: data.notebook, lists: data.lists || []};
+    else pendingWindowsImport[type] = data;
+    if (!pendingWindowsImport.study || !pendingWindowsImport.notebook) {
+        const next = pendingWindowsImport.study ? 'notebook_state.json' : 'study_state.json';
+        if (!confirm(`已读取 ${type === 'study' ? 'study_state.json' : 'notebook_state.json'}，尚未修改安卓记录。请继续选择 ${next}。取消将放弃这次迁移。`)) { pendingWindowsImport = {}; return; }
+        if (window.Android) Android.importFile('json');
+        else toast(`请继续导入 ${next}，尚未修改当前记录`);
+        return;
+    }
+    const result = window.WindowsMigration.convert(pendingWindowsImport, catalog);
+    const summary = result.summary;
+    const message = `Windows 迁移预览：\n已完成学习 ${summary.learnedWords} 词；错题 ${summary.wrong}；易错 ${summary.prone}；已掌握 ${summary.mastered}。\n历史列表 ${summary.historicalLists} 个；未完成列表 ${summary.activeWords} 词；作答 ${summary.attempts} 次。\n\n这会替换当前安卓进度，不是合并。恢复前会保存本地快照，但请先自行导出备份。复习日期按安卓规则重算，未完成题目按安卓题型重建。\n确认迁移？`;
+    if (!confirm(message)) { pendingWindowsImport = {}; return; }
+    stopSpeech();
+    restore(JSON.stringify(result.state));
+    pendingWindowsImport = {};
+    toast('Windows 记录迁移完成；可在首页继续未完成列表');
+}
 window.lifecyclePause = () => {
     stopSpeech();
     tick(); if (state?.active) { state.active.paused = true; persist(); if (page === 'session') render(); }
