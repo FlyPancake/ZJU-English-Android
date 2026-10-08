@@ -83,3 +83,14 @@ test('recognizes a bundled export and rejects dangerous word identifiers', () =>
     const input = fixture(); input.study.words[0].word = {english: '__proto__', chinese: 'bad'};
     assert.throws(() => M.convert(input, catalog));
 });
+test('migrates quota and all daily-plan switches, preserves zero-day intervals and translates Windows order names', () => {
+    const input = fixture();
+    Object.assign(input.study.settings, {listCount: 5, problemCount: 9, defaultBookCounts: {book2: 4}, randomExtraction: true, allowOverlap: false, reviewDueOnly: true, carryOverCountsInNewCount: false, carryOverPreview: false, reviewDays: [0, 1], newQuestionOrder: 'unit_random'});
+    const {state} = M.convert(input, catalog);
+    assert.deepEqual(state.settings.defaultBookCounts, {book2: 4});
+    assert.equal(state.settings.listCount, 5); assert.equal(state.settings.problemCount, 9);
+    assert.equal(state.settings.randomExtraction, true); assert.equal(state.settings.allowOverlap, false);
+    assert.equal(state.settings.reviewDueOnly, true); assert.equal(state.settings.carryOverCountsInNewCount, false);
+    assert.equal(state.settings.carryOverPreview, false); assert.deepEqual(state.settings.reviewDays, [0, 1]);
+    assert.equal(state.settings.modules.new.order, 'unitRandom'); assert.equal(state.learned.hello.due, '2026-10-08');
+});

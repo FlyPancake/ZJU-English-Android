@@ -1,5 +1,6 @@
 'use strict';
 const E = window.Engine;
+const P = window.StudyPlan;
 const names = {example: '例句填空', dictation: '听写', spelling: '中文拼写'};
 const kinds = {new: '每日新学', review: '历史列表复习', problem: '错题与易错词', free: '自由练习'};
 const notebooks = {wrong: '错题本', prone: '易错本', mastered: '已掌握', priority: '优先学习', recent: '最近作答'};
@@ -62,8 +63,19 @@ function tick() {
     const now = performance.now();
     if (state?.active && !state.active.paused && page === 'session' && !document.hidden) state.active.elapsed += Math.min(now - lastTick, 2000);
     lastTick = now;
+    if (settleDaily()) return;
     if (element('timer') && state.active) element('timer').textContent = clock(state.active.elapsed);
     if (state?.active && Date.now() - lastSave > 10000) persist();
+}
+function settleDaily(when = new Date()) {
+    if (!state?.active || state.active.kind === 'free' || state.active.date >= E.studyDayKey(when)) return false;
+    const previous = JSON.stringify({...state, backups: []});
+    const result = P.settleCrossDay(state, when);
+    if (!result) return false;
+    state.backups.push({time: when.getTime(), data: previous}); state.backups = state.backups.slice(-5);
+    stopSpeech(); undo = []; if (page === 'session') page = 'home';
+    persist(); render(); toast(`已跨日结算：${result.released.length} 词返池优先抽取，完成词和错题记录保留`);
+    return true;
 }
 function navigate(next) {
     if (page === 'session' && state.active) { tick(); state.active.paused = true; stopSpeech(); persist(); }
@@ -76,17 +88,51 @@ function render() {
     element('app').innerHTML = (views[page] || home)();
     if (page === 'settings') element('app').lastElementChild.insertAdjacentHTML('beforeend', `<p>${button('licenses', '查看第三方数据许可')}</p>`);
     if (page === 'settings') element('app').lastElementChild.insertAdjacentHTML('beforeend', `<h3>Windows 学习记录迁移</h3><p class="muted">先导出手机备份。依次选择 notebook_state.json 和 study_state.json，确认后替换当前安卓记录，并保留恢复前的本地快照。不是两端进度合并。</p><p>${button('windowsImport', '迁移 Windows 记录')}</p>`);
+    if (page === 'settings') element('app').insertAdjacentHTML('afterbegin', planSettings());
+}
+function planSettings() {
+    const prefs = state.settings;
+    return `<section class="card"><h2>配额与跨日规则</h2>${number('problemCount', '每轮错题 / 易错词数量', prefs.problemCount, 0, 10000)}${allBooks().map((book, index) => number('defaultQuota-' + index, book.name + ' 默认新学配额', prefs.defaultBookCounts[book.id] || 0, 0, 10000)).join('')}<p class="muted">默认配额全为 0 时，用每日新学目标作为第一本词书的配额；抽取前可逐书调整。配额不足不跨书补足，重复词只抽一次。</p>${checkbox('randomExtraction', '随机跨单元抽取（关闭时按词书及单元顺序）', prefs.randomExtraction)}${checkbox('carryOverCountsInNewCount', '跨日优先词计入各书新学配额', prefs.carryOverCountsInNewCount)}${checkbox('carryOverPreview', '跨日优先词重新展示单词、例句和释义', prefs.carryOverPreview)}${checkbox('allowOverlap', '同一词允许当天同时进入列表复习与错题复习', prefs.allowOverlap)}${checkbox('reviewDueOnly', '仅抽取已到复习间隔的错题 / 易错词', prefs.reviewDueOnly)}<p class="muted">学习日固定在本地时间凌晨 04:01 切换。未完成的每日列表自动结算，未完成词返池优先；完成词、已掌握和错题记录保留。不计配额时，返池词额外加入，0 配额只关闭该书普通新词。关闭重新展示时，返池词只显示单词和音标，可直接下一词。自由练习不返池。</p></section>`;
 }
 function metrics(items) { return `<div class="grid">${items.map(([value, label]) => `<div class="metric"><strong>${value}</strong><small>${label}</small></div>`).join('')}</div>`; }
 function home() {
-    const today = E.dateKey(), todayAttempts = state.attempts.filter(attempt => attempt.date === today);
+    const today = E.studyDayKey(), todayAttempts = state.attempts.filter(attempt => attempt.date === today);
     const todayNew = Object.values(state.learned).filter(item => item.date === today).length;
-    const due = Object.entries(state.learned).filter(([id, item]) => item.due <= today && state.records[id]?.notebook !== 'mastered').length;
-    return `<section class="card"><span class="pill">${today} · 学习计划</span><h2 style="margin-top:16px">今天，也前进一步。</h2>${metrics([[todayNew, '今日新学 / ' + state.settings.newCount], [todayAttempts.length, '今日作答'], [due, '到期复习'], [counts('wrong'), '错题待巩固']])}</section>
+    const due = P.reviewPool(state, Object.values(words)).words.length;
+    return `<section class="card"><span class="pill">${today} · 学习计划</span><h2 style="margin-top:16px">今天，也前进一步。</h2>${metrics([[todayNew, '今日新学 / ' + state.settings.newCount], [todayAttempts.length, '今日作答'], [due, '历史复习待抽'], [counts('wrong'), '错题待巩固']])}</section>
         ${state.active ? `<section class="card"><h3>继续${kinds[state.active.kind]}</h3><p class="muted">${state.active.completed.length} / ${state.active.total} 题 · ${clock(state.active.elapsed)}</p>${button('resume', '恢复上次进度', '', 'primary')}</section>` : ''}
-        <section class="card"><h3>${esc(state.settings.book)} · 每日学习</h3><p class="muted">先预览，再完成例句 / 听写 / 拼写。答错会在队列末尾复现。</p><div class="row">${button('start', '开始新学', 'new', 'primary')}${button('start', '到期复习', 'review')}</div><div class="row" style="margin-top:10px">${button('start', '错题 / 易错词', 'problem')}${button('nav', '自由练习', 'practice')}</div></section>
-        <section class="card"><h3>学习范围</h3><p class="muted">词书和单元在「练习」中选择；每日数量和题型在设置中调整。已掌握单词不会再次抽取。</p>${button('nav', '选择词书与单元', 'practice')}</section>
-        ${!state.attempts.length ? `<section class="card"><h3>第一次使用？</h3><p>1. 选择词书和单元。<br>2. 点击每日新学，预览后开始答题。<br>3. 空答案按提交会依次显示提示。<br>4. 点击「斩」手动标记已掌握。<br>5. 在设置中定期导出备份。</p><p class="muted">听写使用手机的英语语音包；没有语音包时请先安装。</p></section>` : ''}`;
+        ${quotaPanel()}
+        <section class="card"><h3>复习与自由练习</h3><p class="muted">历史列表复习抽取之前学习日的 ${state.settings.listCount} 个新学列表；错题 / 易错词每轮最多 ${state.settings.problemCount} 词。答错在队列末尾复现。</p><div class="row">${button('start', '历史列表复习', 'review')}${button('start', '错题 / 易错词', 'problem')}</div><p>${button('nav', '自由练习', 'practice')}</p></section>
+        <section class="card"><h3>学习范围</h3><p class="muted">新学按上方多词书配额抽取，只使用各书在首页选定的单元；普通新词和跨日返池词均遵守范围，余量不足不从范围外补足。修改范围只影响下一批，不改变当前列表。自由练习的范围在「练习」中独立设置。已掌握词不抽取。每批结束后可继续抽下一批，每日目标不是强制上限。</p>${button('nav', '选择自由练习范围', 'practice')}</section>
+        ${!state.attempts.length ? `<section class="card"><h3>第一次使用？</h3><p>1. 首页分配各书配额，并展开「新学单元范围」选择单元。<br>2. 点击每日新学，预览后开始答题。<br>3. 空答案按提交会依次显示提示。<br>4. 点击「斩」手动标记已掌握。<br>5. 在设置中定期导出备份。</p><p class="muted">听写使用手机的英语语音包；没有语音包时请先安装。</p></section>` : ''}`;
+}
+function quotaPanel() {
+    const books = allBooks(), defaults = P.quotaDefaults(state, books), remaining = P.availableCounts(state, Object.values(words), books);
+    return `<section class="card" id="quotaPanel"><h3>多词书配额新学</h3><p class="muted">逐书分配数量并选择新学单元；普通新词和返池词只从所选范围抽取，余量不足不跨单元或跨书补足，同名词只抽一次。单元范围自动保存，修改后用于下一批，与自由练习独立。</p>${books.map((book, index) => `<div class="quota-book"><label for="quota-${index}" data-remaining-book="${esc(book.id)}">${esc(book.name)} · 范围内可抽 ${remaining[book.id]} 词</label><input id="quota-${index}" data-quota="${esc(book.id)}" type="number" min="0" max="10000" value="${defaults[book.id]}">${newUnitPicker(book)}</div>`).join('')}${checkbox('rememberQuotas', '记住本次配额作为默认', true)}<p>${button('start', '开始新学', 'new', 'primary')}</p><p class="muted">学习日凌晨 04:01 切换；当前返池优先词 ${state.priorityWords.filter(id => words[id] && state.records[id]?.notebook !== 'mastered').length} 个（仅范围内的词参与本次抽取，范围外的词仍保留在返池中）。</p></section>`;
+}
+function unitRangeLabel(book) {
+    const units = P.selectedUnits(state, book);
+    return !units.length ? '未选单元（本书不抽取）' : units.length === book.units.length ? '全部单元' : units.join('、');
+}
+function newUnitPicker(book) {
+    const selected = P.selectedUnits(state, book);
+    return `<details class="new-unit-picker" data-range-book="${esc(book.id)}"><summary>新学单元范围：<span data-range-summary="${esc(book.id)}">${esc(unitRangeLabel(book))}</span></summary><label class="check"><input type="checkbox" data-new-units-all="${esc(book.id)}" ${selected.length === book.units.length ? 'checked' : ''}>全部单元（取消即清空）</label><div class="units">${book.units.map(unit => `<label class="check"><input type="checkbox" data-new-unit-book="${esc(book.id)}" value="${esc(unit)}" ${selected.includes(unit) ? 'checked' : ''}>${esc(unit)}</label>`).join('')}</div><p class="muted">至少勾选一个单元才能从本书抽词；全部取消表示本书暂不抽取，不会视为全部。</p></details>`;
+}
+function refreshNewRanges() {
+    const books = allBooks(), remaining = P.availableCounts(state, Object.values(words), books);
+    for (const book of books) {
+        const selected = P.selectedUnits(state, book);
+        for (const label of document.querySelectorAll('[data-remaining-book]')) if (label.dataset.remainingBook === book.id) label.textContent = book.name + ' · 范围内可抽 ' + remaining[book.id] + ' 词';
+        for (const summary of document.querySelectorAll('[data-range-summary]')) if (summary.dataset.rangeSummary === book.id) summary.textContent = unitRangeLabel(book);
+        for (const input of document.querySelectorAll('[data-new-unit-book]')) if (input.dataset.newUnitBook === book.id) input.checked = selected.includes(input.value);
+        for (const input of document.querySelectorAll('[data-new-units-all]')) if (input.dataset.newUnitsAll === book.id) { input.checked = selected.length === book.units.length; input.indeterminate = selected.length > 0 && selected.length < book.units.length; }
+    }
+}
+function quotaShortfallText(session) {
+    return Object.entries(session.quotaShortfalls || {}).map(([id, item]) => {
+        const book = allBooks().find(book => book.id === id);
+        return (book?.name || id) + ' 配额 ' + item.requested + '，实际抽取' + (session.carryOverCountsInNewCount === false ? '普通新词' : '') + ' ' + item.actual + ' 词';
+    }).join('；');
 }
 function practice() {
     const book = allBooks().find(item => item.id === state.settings.book) || allBooks()[0];
@@ -110,15 +156,15 @@ function stats() {
         const key = E.dateKey(new Date(now.getFullYear(), now.getMonth(), day));
         calendar += `<div class="day ${dates.has(key) ? 'studied' : ''} ${day === now.getDate() ? 'today' : ''}">${day}</div>`;
     }
-    return `<section class="card"><h2>学习统计</h2>${metrics([[Object.keys(state.learned).length, '累计学习单词'], [state.attempts.length ? Math.round(correct * 100 / state.attempts.length) + '%' : '—', '全部作答正确率（含复现）'], [clock(totalTime), '有效学习时长'], [dates.size, '学习天数']])}<p class="muted">暂停、离开学习页或切到后台不计时。</p></section><section class="card"><h3>${now.getFullYear()} 年 ${now.getMonth() + 1} 月</h3><div class="calendar">${['日', '一', '二', '三', '四', '五', '六'].map(day => `<small style="text-align:center">${day}</small>`).join('')}${calendar}</div></section><section class="card"><h3>历史学习列表</h3>${state.sessions.slice().reverse().slice(0, pageLimit).map(item => `<div class="history"><strong>${kinds[item.kind]} · ${item.date}</strong><p class="muted">${item.words.length} 词 · ${item.answered ? Math.round(item.correct * 100 / item.answered) + '%' : '未作答'} · ${clock(item.elapsed)} · ${item.complete ? '已完成' : '提前结束'}</p>${button('historyReview', '复习本列表', item.id)}</div>`).join('') || '<p class="empty muted">完成一轮学习后会显示在这里。</p>'}${state.sessions.length > pageLimit ? button('more', '更多历史') : ''}</section>`;
+    return `<section class="card"><h2>学习统计</h2>${metrics([[Object.keys(state.learned).length, '累计学习单词'], [state.attempts.length ? Math.round(correct * 100 / state.attempts.length) + '%' : '—', '全部作答正确率（含复现）'], [clock(totalTime), '有效学习时长'], [dates.size, '学习天数']])}<p class="muted">暂停、离开学习页或切到后台不计时。</p></section><section class="card"><h3>${now.getFullYear()} 年 ${now.getMonth() + 1} 月</h3><div class="calendar">${['日', '一', '二', '三', '四', '五', '六'].map(day => `<small style="text-align:center">${day}</small>`).join('')}${calendar}</div></section><section class="card"><h3>历史学习列表</h3>${state.sessions.slice().reverse().slice(0, pageLimit).map(item => `<div class="history"><strong>${kinds[item.kind]} · ${item.date}</strong><p class="muted">${item.words.length} 词 · ${item.answered ? Math.round(item.correct * 100 / item.answered) + '%' : '未作答'} · ${clock(item.elapsed)} · ${item.status === 'settled' ? '跨日已结算' : item.complete ? '已完成' : '提前结束'}</p>${button('historyReview', '复习本列表', item.id)}</div>`).join('') || '<p class="empty muted">完成一轮学习后会显示在这里。</p>'}${state.sessions.length > pageLimit ? button('more', '更多历史') : ''}</section>`;
 }
 function settings() {
     const prefs = state.settings;
-    return `<section class="card"><h2>学习设置</h2><div class="row"><div>${number('newCount', '每日新学数量', prefs.newCount, 1)}</div><div>${number('reviewCount', '每轮复习数量', prefs.reviewCount, 1)}</div></div>${checkbox('fuzzy', '接受自定义答案和斜线变体', prefs.fuzzy)}${checkbox('firstLetter', '例句首字母提示', prefs.firstLetter)}${checkbox('retry', '自由练习答错后再次出现', prefs.retry)}<label>复习间隔（天，用逗号分隔）</label><input id="reviewDays" value="${prefs.reviewDays.join(',')}"><details><summary>错题 → 易错本门槛</summary><p class="muted">三项必须同时满足；每词每列表每题型只计算首次作答，复现答对不计入。已掌握只能手动「斩」。</p>${E.modes.map(mode => number(mode + 'Target', names[mode] + '首次答对次数', prefs[mode + 'Target'], 0, 99)).join('')}</details></section>
+    return `<section class="card"><h2>学习设置</h2><div class="row"><div>${number('newCount', '每日新学目标', prefs.newCount, 0, 10000)}</div><div>${number('listCount', '历史列表复习数量', prefs.listCount, 0, 10000)}</div></div>${checkbox('fuzzy', '接受自定义答案和斜线变体', prefs.fuzzy)}${checkbox('firstLetter', '例句首字母提示', prefs.firstLetter)}${checkbox('retry', '自由练习答错后再次出现', prefs.retry)}<label>复习间隔（天，用逗号分隔）</label><input id="reviewDays" value="${prefs.reviewDays.join(',')}"><details><summary>错题 → 易错本门槛</summary><p class="muted">三项必须同时满足；每词每列表每题型只计算首次作答，复现答对不计入。已掌握只能手动「斩」。</p>${E.modes.map(mode => number(mode + 'Target', names[mode] + '首次答对次数', prefs[mode + 'Target'], 0, 99)).join('')}</details></section>
         <section class="card"><h3>四模块独立题型设置</h3>${Object.entries(kinds).map(([kind, name]) => `<details ${kind === 'free' ? 'open' : ''}><summary>${name}</summary>${E.modes.map(mode => checkbox(`${kind}-${mode}`, names[mode], prefs.modules[kind].modes.includes(mode))).join('')}<label>题目顺序</label><select id="${kind}-order">${options([['sequential', '顺序'], ['unitRandom', '单元内随机'], ['bookRandom', '词书内随机']], prefs.modules[kind].order)}</select><label>题型先后顺序</label><select id="${kind}-taskOrder">${options([['example,dictation,spelling', '例句 → 听写 → 拼写'], ['spelling,example,dictation', '拼写 → 例句 → 听写'], ['dictation,example,spelling', '听写 → 例句 → 拼写'], ['example,spelling,dictation', '例句 → 拼写 → 听写'], ['spelling,dictation,example', '拼写 → 听写 → 例句'], ['dictation,spelling,example', '听写 → 拼写 → 例句']], prefs.modules[kind].taskOrder.join(','))}</select></details>`).join('')}</section>
         <section class="card"><h3>英语朗读</h3>${checkbox('autoSpeak', '新学首次自动朗读（填空 / 中译英仅手动）', prefs.autoSpeak)}<label>英语口音</label><select id="accent">${options([['US', '美式英语'], ['UK', '英式英语']], prefs.accent)}</select><label>语速 ${prefs.rate.toFixed(2)}</label><input id="rate" type="range" min="0.3" max="1.5" step="0.05" value="${prefs.rate}"><label>音量 ${Math.round(prefs.volume * 100)}%</label><input id="volume" type="range" min="0" max="1" step="0.05" value="${prefs.volume}"><p>${button('tts', '系统英语语音设置')}</p><p class="muted">新学预览每词自动朗读一次，回看和恢复不重复。例句填空、中译英及复现仅点击朗读时播放；听写仍自动播放。语音质量和离线能力由手机引擎决定，请安装英语语音包。手机音量键控制媒体音量。</p></section>
         <section class="card"><h3>外观</h3><label>主题</label><select id="theme">${options([['dark', '深色'], ['light', '浅色']], prefs.theme)}</select>${checkbox('background', '显示导入的壁纸 / 循环视频', prefs.background)}<label>面板不透明度</label><input id="opacity" type="range" min="50" max="100" value="${prefs.opacity}"><p>${button('background', '选择图片或视频')}${button('resetAppearance', '恢复默认外观')}</p></section>
-        <section class="card">${button('saveSettings', '保存全部设置', '', 'primary')}</section><section class="card"><h3>备份与恢复</h3><p class="muted">完整安卓备份包含进度、词本、设置和自定义词书，不包含壁纸文件。卸载应用会删除本地记录，请先导出。</p><div class="row">${button('export', '导出完整备份')}${button('import', '导入 / 恢复备份')}</div><p class="muted">每 10 分钟和提前结束时保存本地快照，最多保留 5 份。恢复前自动保留当前快照。</p>${state.backups.map((backup, index) => `<p>${button('restoreLocal', '恢复 ' + new Date(backup.time).toLocaleString('zh-CN'), String(index))}</p>`).join('')}</section><section class="card"><h3>关于这个安卓移植版</h3><p>基于原项目增强版的学习规则重新实现，内置原仓库 book2 / book3。支持 Android 8.0 及以上。</p><p class="muted">这是非官方安卓移植，不是 Windows 程序的直接封装。Windows 快捷键、多窗口及 GitHub 自动更新未移植；支持转换 Windows study_state.json 和 notebook_state.json 后替换恢复；旧版 wrong_words.json 仅导入错题词条。</p><p class="muted">原仓库代码和词书没有明确的完整授权，请仅按来源说明用于个人学习，不作商业发布。词性数据来源 ECDICT，MIT 许可详见源码中的第三方说明。</p></section>`;
+        <section class="card">${button('saveSettings', '保存全部设置', '', 'primary')}</section><section class="card"><h3>备份与恢复</h3><p class="muted">完整安卓备份包含进度、词本、设置和自定义词书，不包含壁纸文件。卸载应用会删除本地记录，请先导出。</p><div class="row">${button('export', '导出完整备份')}${button('import', '导入 / 恢复备份')}</div><p class="muted">每 10 分钟和提前结束时保存本地快照，最多保留 5 份。恢复前自动保留当前快照。</p>${state.backups.map((backup, index) => `<p>${button('restoreLocal', '恢复 ' + new Date(backup.time).toLocaleString('zh-CN'), String(index))}</p>`).join('')}</section><section class="card"><h3>关于这个安卓移植版</h3><p class="muted">当前版本：v1.2.1</p><p>基于原项目增强版的学习规则重新实现，内置原仓库 book2 / book3。支持 Android 8.0 及以上。</p><p class="muted">这是非官方安卓移植，不是 Windows 程序的直接封装。Windows 快捷键、多窗口及 GitHub 自动更新未移植；支持转换 Windows study_state.json 和 notebook_state.json 后替换恢复；旧版 wrong_words.json 仅导入错题词条。</p><p class="muted">原仓库代码和词书没有明确的完整授权，请仅按来源说明用于个人学习，不作商业发布。词性数据来源 ECDICT，MIT 许可详见源码中的第三方说明。</p></section>`;
 }
 function diff(input, answer) {
     const entered = Array.from(input), expected = Array.from(answer);
@@ -130,14 +176,16 @@ function licenses() {
 function session() {
     const current = state.active;
     if (!current) return '<section class="card"><p>没有正在进行的学习。</p></section>';
-    const heading = `<div class="row"><span class="pill">${kinds[current.kind]}</span><span class="tight muted" id="timer">${clock(current.elapsed)}</span></div><div class="progress"><div style="width:${current.completed.length * 100 / current.total}%"></div></div><small>完成 ${current.completed.length} / ${current.total} 题 · ${current.words.length} 词</small>`;
+    const shortfall = quotaShortfallText(current);
+    const heading = `${shortfall ? `<p class="muted quota-shortfall">${esc(shortfall)}；未从范围外补足。</p>` : ''}<div class="row"><span class="pill">${kinds[current.kind]}</span><span class="tight muted" id="timer">${clock(current.elapsed)}</span></div><div class="progress"><div style="width:${current.completed.length * 100 / current.total}%"></div></div><small>完成 ${current.completed.length} / ${current.total} 题 · ${current.words.length} 词</small>`;
     if (current.paused) return `<section class="card">${heading}<h2 style="margin-top:24px">学习已暂停</h2><p class="muted">进度、输入和提示已保存。暂停期间不计时。</p>${button('resume', '继续学习', '', 'primary')} ${button('end', '提前结束', '', 'danger')}</section>`;
     if (current.phase === 'preview') {
         const word = words[current.words[current.preview]];
         const stage = current.previewStage || 0;
+        const needsLayers = E.previewNeedsLayers(state);
         const phonetic = word.phonetic ? `<p class="phonetic" id="previewPhonetic">/${esc(word.phonetic)}/${word.phoneticSource === 'components' ? '<small>（按组成词标注）</small>' : ''}</p>` : '<p class="phonetic muted" id="previewPhonetic">暂无音标，可点击朗读</p>';
         const examples = word.examples ? word.examples.replace(/\[\[(.*?)\]\]/g, '$1').replace(/；/g, '\n\n') : '这个词暂时没有例句。';
-        return `<section class="card">${heading}<p class="muted">预览 ${current.preview + 1} / ${current.words.length} · 第 ${stage + 1} / 3 层</p><div class="word">${esc(word.english)}</div>${phonetic}${stage >= 1 ? `<section id="previewExamples"><h3>例句</h3><p class="sentence" style="white-space:pre-line">${esc(examples)}</p></section>` : ''}${stage >= 2 ? `<section id="previewMeaning"><h3>完整中英释义</h3><p class="meaning">${esc(word.pos ? word.pos + '  ' : '')}${esc(word.chinese)}</p></section>` : ''}<div class="row">${button('speak', '朗读', word.id)}${button('master', '斩 · 已掌握', word.id)}</div><div class="row" style="margin-top:12px">${button('previewPrev', '上一词')}${stage < 2 ? button('previewReveal', stage === 0 ? '显示例句' : '显示完整中英释义', '', 'primary') : button('previewNext', current.preview + 1 === current.words.length ? '开始答题' : '下一词', '', 'primary')}</div><p>${button('pause', '暂停')}</p></section>`;
+        return `<section class="card">${heading}<p class="muted">预览 ${current.preview + 1} / ${current.words.length} · ${needsLayers ? '第 ' + (stage + 1) + ' / 3 层' : '返池词简略预览'}</p><div class="word">${esc(word.english)}</div>${phonetic}${stage >= 1 ? `<section id="previewExamples"><h3>例句</h3><p class="sentence" style="white-space:pre-line">${esc(examples)}</p></section>` : ''}${stage >= 2 ? `<section id="previewMeaning"><h3>完整中英释义</h3><p class="meaning">${esc(word.pos ? word.pos + '  ' : '')}${esc(word.chinese)}</p></section>` : ''}<div class="row">${button('speak', '朗读', word.id)}${button('master', '斩 · 已掌握', word.id)}</div><div class="row" style="margin-top:12px">${button('previewPrev', '上一词')}${needsLayers && stage < 2 ? button('previewReveal', stage === 0 ? '显示例句' : '显示完整中英释义', '', 'primary') : button('previewNext', current.preview + 1 === current.words.length ? '开始答题' : '下一词', '', 'primary')}</div><p>${button('pause', '暂停')}</p></section>`;
     }
     const task = current.tasks[current.cursor], word = words[task.word];
     const meaning = `<p class="meaning">${esc(word.pos ? word.pos + '  ' : '')}${esc(word.chinese)}</p>`;
@@ -216,6 +264,7 @@ function confirmMaster(word) {
     });
 }
 function markMastered(word) {
+    if (settleDaily()) return;
     if (state.active) snapshotUndo();
     const finished = E.masterWord(state, word);
     if (finished) complete();
@@ -236,14 +285,21 @@ function nextTask() {
     if (E.advance(state)) complete(); else { persist(); render(); autoSpeak(); }
 }
 function begin(kind, supplied) {
+    settleDaily();
     if (state.active) { toast('请先继续或结束当前学习列表'); page = 'session'; render(); return; }
     let pool = supplied || selectedWords();
     pool = pool.filter(word => state.records[word.id]?.notebook !== 'mastered');
     if (!supplied && kind === 'new') {
-        const studiedToday = Object.values(state.learned).filter(item => item.date === E.dateKey()).length;
-        pool = pool.filter(word => !state.learned[word.id]).sort((left, right) => Number(state.records[right.id]?.notebook === 'priority') - Number(state.records[left.id]?.notebook === 'priority')).slice(0, Math.max(0, state.settings.newCount - studiedToday));
-    } else if (!supplied && kind === 'review') pool = pool.filter(word => state.learned[word.id]?.due <= E.dateKey()).slice(0, state.settings.reviewCount);
-    else if (!supplied && kind === 'problem') pool = Object.values(words).filter(word => ['wrong', 'prone'].includes(state.records[word.id]?.notebook)).slice(0, state.settings.reviewCount);
+        const inputs = [...document.querySelectorAll('input[data-quota]')];
+        const quotas = inputs.length ? Object.fromEntries(inputs.map(input => [input.dataset.quota, Number(input.value)])) : P.quotaDefaults(state, allBooks());
+        const session = P.startNew(state, Object.values(words), allBooks(), quotas);
+        const shortfall = quotaShortfallText(session);
+        if (element('rememberQuotas')?.checked) state.settings.defaultBookCounts = E.clone(quotas);
+        undo = []; page = 'session'; persist(); render(); autoSpeak();
+        if (shortfall) toast(shortfall + '；未从范围外补足');
+        return;
+    } else if (!supplied && kind === 'review') pool = P.reviewPool(state, Object.values(words)).words;
+    else if (!supplied && kind === 'problem') pool = P.problemPool(state, Object.values(words));
     else if (kind === 'free' && !supplied) {
         const content = element('content')?.value || 'all';
         if (content === 'unlearned') pool = pool.filter(word => !state.learned[word.id]);
@@ -257,16 +313,21 @@ function begin(kind, supplied) {
 }
 function saveSettings() {
     const prefs = E.clone(state.settings);
-    for (const key of ['newCount', 'reviewCount', 'exampleTarget', 'dictationTarget', 'spellingTarget']) {
-        const value = Number(element(key).value), min = key.endsWith('Count') ? 1 : 0;
-        if (!Number.isInteger(value) || value < min || value > 1000) throw Error('数量设置必须是范围内的整数');
+    for (const key of ['newCount', 'listCount', 'problemCount', 'exampleTarget', 'dictationTarget', 'spellingTarget']) {
+        const value = Number(element(key).value), min = 0;
+        if (!Number.isInteger(value) || value < min || value > (key.endsWith('Count') ? 10000 : 1000)) throw Error('数量设置必须是范围内的整数');
         prefs[key] = value;
     }
-    for (const key of ['fuzzy', 'firstLetter', 'retry', 'autoSpeak', 'background']) prefs[key] = element(key).checked;
+    for (const key of ['fuzzy', 'firstLetter', 'retry', 'autoSpeak', 'background', 'randomExtraction', 'allowOverlap', 'reviewDueOnly', 'carryOverCountsInNewCount', 'carryOverPreview']) prefs[key] = element(key).checked;
+    prefs.defaultBookCounts = Object.fromEntries(allBooks().map((book, index) => {
+        const value = Number(element('defaultQuota-' + index).value);
+        if (!Number.isInteger(value) || value < 0 || value > 10000) throw Error('词书配额必须是 0–10000 的整数');
+        return [book.id, value];
+    }));
     for (const key of ['theme', 'accent']) prefs[key] = element(key).value;
     for (const key of ['rate', 'volume', 'opacity']) prefs[key] = Number(element(key).value);
     prefs.reviewDays = element('reviewDays').value.split(/[,，\s]+/).filter(Boolean).map(Number);
-    if (!prefs.reviewDays.length || prefs.reviewDays.some(day => !Number.isInteger(day) || day < 1 || day > 365)) throw Error('复习间隔请输入 1–365 天');
+    if (!prefs.reviewDays.length || prefs.reviewDays.some(day => !Number.isInteger(day) || day < 0 || day > 365)) throw Error('复习间隔请输入 0–365 天');
     for (const kind of Object.keys(kinds)) {
         const enabled = E.modes.filter(mode => element(`${kind}-${mode}`).checked);
         if (!enabled.length) throw Error(kinds[kind] + '至少启用一种题型');
@@ -276,6 +337,7 @@ function saveSettings() {
 }
 async function action(name, value) {
     if (locked) return;
+    if (settleDaily() && ['resume', 'pause', 'previewPrev', 'previewReveal', 'previewNext', 'submit', 'hint', 'next', 'skip', 'master', 'undo', 'end', 'speakTask'].includes(name)) return;
     switch (name) {
         case 'nav': navigate(value); break;
         case 'start': begin(value); break;
@@ -309,7 +371,7 @@ async function action(name, value) {
         case 'move': { const [id, target] = value.split('|'); if (target === 'mastered') { if (await confirmMaster(words[id])) markMastered(words[id]); break; } const record = E.record(state, words[id]); record.notebook = target; record.edited = Date.now(); if (target === 'wrong') record.counts = {example: 0, dictation: 0, spelling: 0}; persist(); render(); break; }
         case 'alias': { const record = E.record(state, words[value]); const input = prompt('可接受的自定义答案，用分号分隔。需要在设置中开启自定义答案。', record.aliases.join(';')); if (input !== null) { record.aliases = input.split(/[;；]/).map(E.normalize).filter(Boolean); record.edited = Date.now(); persist(); toast('已保存'); } break; }
         case 'notebookPractice': { const pool = Object.values(words).filter(word => value === 'recent' ? state.attempts.some(attempt => attempt.word === word.id) : state.records[word.id]?.notebook === value); begin('problem', pool); break; }
-        case 'historyReview': { const previous = state.sessions.find(item => item.id === value); begin('review', previous.words.map(id => words[id]).filter(Boolean)); break; }
+        case 'historyReview': { const previous = state.sessions.find(item => item.id === value); begin('review', (previous.retainedWords || previous.words).map(id => words[id]).filter(Boolean)); break; }
         case 'saveSettings': saveSettings(); break;
         case 'tts': if (window.Android) Android.ttsSettings(); else toast('浏览器预览使用浏览器语音'); break;
         case 'licenses': licenseText = await (await fetch('third-party-notices.txt')).text(); navigate('licenses'); break;
@@ -324,7 +386,7 @@ async function action(name, value) {
 }
 function restore(text) {
     const restored = JSON.parse(text), existingState = state;
-    try { state = restored; rebuild(); E.validate(restored, new Set(Object.keys(words))); }
+    try { state = restored; P.normalize(state); rebuild(); P.validate(restored, new Set(Object.keys(words))); }
     catch (error) { state = existingState; rebuild(); throw error; }
     const previousBackups = existingState.backups || [];
     previousBackups.push({time: Date.now(), data: JSON.stringify({...existingState, backups: []})});
@@ -389,13 +451,13 @@ window.lifecyclePause = () => {
     tick(); if (state?.active) { state.active.paused = true; persist(); if (page === 'session') render(); }
     element('wallpaper').querySelector('video')?.pause();
 };
-window.lifecycleResume = () => { element('wallpaper').querySelector('video')?.play().catch(() => {}); };
+window.lifecycleResume = () => { settleDaily(); element('wallpaper').querySelector('video')?.play().catch(() => {}); };
 window.back = () => { if (element('masterDialog')) { element('masterCancel').click(); return; } if (page !== 'home') navigate('home'); else { persist(); if (window.Android) Android.exit(); } };
-document.addEventListener('visibilitychange', () => { if (document.hidden) window.lifecyclePause(); else element('wallpaper').querySelector('video')?.play().catch(() => {}); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) window.lifecyclePause(); else window.lifecycleResume(); });
 document.addEventListener('click', event => { const target = event.target.closest('[data-action]'); if (target) action(target.dataset.action, target.dataset.value).catch(error => toast(error.message)); });
 document.addEventListener('keydown', event => {
     if (event.key === 'Enter' && page === 'session' && state.active?.phase === 'preview' && !state.active.paused && !event.target.closest('button,input,select,textarea')) {
-        event.preventDefault(); action((state.active.previewStage || 0) < 2 ? 'previewReveal' : 'previewNext').catch(error => toast(error.message));
+        event.preventDefault(); action(E.previewNeedsLayers(state) && (state.active.previewStage || 0) < 2 ? 'previewReveal' : 'previewNext').catch(error => toast(error.message));
     }
     if (event.key === 'Enter' && event.target.id === 'answer') { event.preventDefault(); action('submit').catch(error => toast(error.message)); }
     if (event.key === 'Escape' && page === 'session' && state.active) action(state.active.paused ? 'resume' : 'pause').catch(error => toast(error.message));
@@ -405,6 +467,18 @@ document.addEventListener('input', event => {
     if (event.target.id === 'search') { search = event.target.value; const position = event.target.selectionStart; render(); element('search').focus(); element('search').setSelectionRange(position, position); }
 });
 document.addEventListener('change', event => {
+    const target = event.target;
+    const rangeBook = target.dataset.newUnitBook || target.dataset.newUnitsAll;
+    if (rangeBook) {
+        const book = allBooks().find(book => book.id === rangeBook);
+        if (!book) return;
+        let selected;
+        if (target.dataset.newUnitsAll) selected = target.checked ? book.units.slice() : [];
+        else selected = [...document.querySelectorAll('[data-new-unit-book]')].filter(input => input.dataset.newUnitBook === rangeBook && input.checked).map(input => input.value);
+        if (selected.length === book.units.length) delete state.settings.newBookUnits[rangeBook];
+        else state.settings.newBookUnits[rangeBook] = selected;
+        persist(); refreshNewRanges();
+    }
     if (event.target.id === 'book') { state.settings.book = event.target.value; state.settings.units = []; persist(); render(); }
     if (event.target.name === 'unit') { state.settings.units = [...document.querySelectorAll('input[name=unit]:checked')].map(input => input.value); persist(); }
     if (event.target.id === 'notebookFilter') { filter = event.target.value; pageLimit = 40; render(); }
@@ -412,8 +486,8 @@ document.addEventListener('change', event => {
 async function init() {
     catalog = await (await fetch('data.json')).json();
     const raw = window.Android ? Android.load() : localStorage.getItem('kry-state');
-    state = raw ? JSON.parse(raw) : E.initial(); rebuild(); if (raw) E.validate(state, new Set(Object.keys(words)));
+    state = raw ? JSON.parse(raw) : E.initial(); P.normalize(state); rebuild(); P.validate(state, new Set(Object.keys(words)));
     if (state.active) state.active.paused = true;
-    appearance(); render(); setInterval(tick, 1000); setInterval(() => { if (state.active && !state.active.paused) backup(); }, 600000);
+    appearance(); render(); if (!settleDaily()) persist(); setInterval(tick, 1000); setInterval(() => { if (state.active && !state.active.paused) backup(); }, 600000);
 }
 init().catch(error => { locked = true; element('app').innerHTML = `<section class="card"><h2>未能读取数据</h2><p>${esc(error.message)}</p><p>为保护已有记录，没有覆盖本地文件。请保留应用数据并联系维护者。</p></section>`; });

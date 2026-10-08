@@ -7,6 +7,11 @@
     function dateKey(date = new Date()) {
         return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
     }
+    function studyDayKey(date = new Date()) {
+        const day = new Date(date.getTime());
+        if (day.getHours() < 4 || (day.getHours() === 4 && day.getMinutes() < 1)) day.setDate(day.getDate() - 1);
+        return dateKey(day);
+    }
     function csv(text) {
         const rows = [];
         let row = [], cell = '', quoted = false;
@@ -60,11 +65,13 @@
     }
     function initial() {
         const module = {modes: ['example', 'spelling'], order: 'sequential', taskOrder: modes.slice()};
-        return {schema: 'kry-android', version: 1, settings: {book: 'book2', units: [], newCount: 20, reviewCount: 30,
+        return {schema: 'kry-android', version: 1, planVersion: 1, settings: {book: 'book2', units: [], newCount: 20, reviewCount: 30,
+listCount: 4, problemCount: 15, defaultBookCounts: {}, newBookUnits: {}, randomExtraction: false, allowOverlap: true,
+            reviewDueOnly: false, carryOverCountsInNewCount: true, carryOverPreview: true,
             modules: {new: clone(module), review: clone(module), problem: clone(module), free: clone(module)},
             retry: true, firstLetter: true, fuzzy: false, autoSpeak: true, rate: 0.85, volume: 1, accent: 'US', theme: 'dark',
             exampleTarget: 0, dictationTarget: 0, spellingTarget: 3, reviewDays: [1, 3, 7, 14], background: false, opacity: 94},
-            records: {}, learned: {}, sessions: [], attempts: [], active: null, customBooks: [], backups: []};
+            records: {}, learned: {}, extracted: {}, priorityWords: [], sessions: [], attempts: [], active: null, customBooks: [], backups: []};
     }
     function record(state, word) {
         return state.records[word.id] || (state.records[word.id] = {notebook: 'none', errors: 0, counts: {example: 0, dictation: 0, spelling: 0}, edited: 0, aliases: []});
@@ -77,7 +84,7 @@
         }
         return result;
     }
-    function start(state, words, kind, config) {
+    function start(state, words, kind, config, when = new Date()) {
         if (!config.modes.length) throw Error('至少启用一种题型');
         let selected = words.filter(word => state.records[word.id]?.notebook !== 'mastered');
         if (config.order === 'bookRandom') selected = shuffle(selected);
@@ -94,11 +101,18 @@
             else tasks.push({word: word.id, mode, answer: clean(word.english), answers: [clean(word.english)], retry: false, key: `${word.id}|${mode}`});
         }
         if (!tasks.length) throw Error('所选单词没有有效例句，请启用拼写或听写');
-        state.active = {id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, kind, date: dateKey(),
+        state.active = {id: `${when.getTime()}-${Math.random().toString(36).slice(2, 8)}`, kind, date: studyDayKey(when),
             words: selected.map(word => word.id), tasks, total: tasks.length, completed: [], counted: [], cursor: 0,
             phase: kind === 'new' ? 'preview' : 'quiz', preview: 0, previewStage: 0, previewSpoken: [], paused: false, input: '', hint: 0, feedback: null,
             elapsed: 0, correct: 0, answered: 0, retry: kind === 'free' ? state.settings.retry : true,
-            config: clone(config), created: Date.now()};
+            config: clone(config), created: when.getTime(), status: 'active', carriedOverWords: [], carryOverPreview: state.settings.carryOverPreview, sourceBooks: {}};
+        if (kind === 'new') {
+            state.extracted = state.extracted || {};
+            for (const word of selected) {
+                state.active.sourceBooks[word.id] = word.sources?.[0]?.book || '';
+                state.extracted[word.id] = {date: state.active.date, book: state.active.sourceBooks[word.id]};
+            }
+        }
         return state.active;
     }
     function automaticSpeech(state) {
@@ -137,7 +151,7 @@
         }
         return answers.some(answer => normalize(answer) === normalize(input));
     }
-    function submit(state, word, input) {
+    function submit(state, word, input, when = new Date()) {
         const session = state.active;
         const task = session.tasks[session.cursor];
         if (!task || session.feedback || session.paused) throw Error('当前无法作答');
@@ -157,9 +171,9 @@
                 if (modes.every(mode => item.counts[mode] >= state.settings[`${mode}Target`])) item.notebook = 'prone';
             }
         }
-        item.edited = Date.now();
+        item.edited = when.getTime(); item.lastAnswered = when.getTime();
         session.answered++; if (correct) session.correct++;
-        state.attempts.push({date: dateKey(), time: Date.now(), session: session.id, word: word.id, mode: task.mode, correct, retry: task.retry});
+        state.attempts.push({date: studyDayKey(when), time: when.getTime(), session: session.id, word: word.id, mode: task.mode, correct, retry: task.retry});
         session.feedback = {correct, input, answer: task.answer, word: word.id, mode: task.mode};
         session.input = '';
         return session.feedback;
@@ -199,21 +213,26 @@
         }
         return skipMastered(state);
     }
-    function finish(state, complete) {
+    function finish(state, complete, when = new Date()) {
         const session = state.active;
         if (!session) return;
+        const completedWords = [], releasedWords = [];
         if (session.kind !== 'free') {
             for (const id of session.words) {
                 const required = session.tasks.filter(task => task.word === id && !task.retry);
-                if (required.length && required.every(task => session.completed.includes(task.key))) {
+                if (state.records[id]?.notebook === 'mastered' || (required.length && required.every(task => session.completed.includes(task.key)))) {
+                    completedWords.push(id);
                     const previous = state.learned[id];
                     const stage = Math.min(previous ? previous.stage + (session.kind === 'review' ? 1 : 0) : 0, state.settings.reviewDays.length - 1);
-                    const due = new Date(); due.setDate(due.getDate() + state.settings.reviewDays[stage]);
-                    state.learned[id] = {date: previous?.date || dateKey(), last: dateKey(), stage, due: dateKey(due)};
+                    const learnedDay = session.date || studyDayKey(when), due = new Date(learnedDay + 'T12:00:00'); due.setDate(due.getDate() + state.settings.reviewDays[stage]);
+                    state.learned[id] = {date: previous?.date || learnedDay, last: learnedDay, stage, due: dateKey(due)};
+                } else {
+                    releasedWords.push(id);
+                    if (session.kind === 'new' && state.extracted) delete state.extracted[id];
                 }
             }
         }
-        state.sessions.push({...session, tasks: [], feedback: null, complete, finished: Date.now()});
+        state.sessions.push({...session, tasks: [], feedback: null, input: '', paused: false, complete, status: complete ? 'completed' : 'ended', completedWords, retainedWords: session.kind === 'free' ? session.words.slice() : completedWords, releasedWords, finished: when.getTime()});
         state.active = null;
     }
     function revealPreview(state) {
@@ -225,7 +244,7 @@
     function movePreview(state, direction) {
         const session = state.active;
         if (!session || session.phase !== 'preview' || session.paused) throw Error('当前不在新词预览阶段');
-        if (direction > 0 && (session.previewStage || 0) < 2) return false;
+        if (direction > 0 && (session.previewStage || 0) < 2 && previewNeedsLayers(state)) return false;
         let next = session.preview + direction;
         while (next >= 0 && next < session.words.length && state.records[session.words[next]]?.notebook === 'mastered') next += direction;
         if (next < 0) return false;
@@ -238,6 +257,10 @@
         session.previewStage = 0;
         return false;
     }
+    function previewNeedsLayers(state) {
+        const session = state.active;
+        return !session || session.carryOverPreview !== false || !(session.carriedOverWords || []).includes(session.words[session.preview]);
+    }
     function validate(data, wordIds) {
         if (!data || data.schema !== 'kry-android' || data.version !== 1 || !data.settings || !data.records || !data.learned ||
             !Array.isArray(data.sessions) || !Array.isArray(data.attempts) || !Array.isArray(data.customBooks)) throw Error('不是有效的安卓备份文件');
@@ -248,9 +271,12 @@
             if (!module || !Array.isArray(module.modes) || !module.modes.length || module.modes.some(mode => !modes.includes(mode)) ||
                 !Array.isArray(module.taskOrder) || modes.some(mode => !module.taskOrder.includes(mode))) throw Error('备份题型设置无效');
         }
-        for (const key of ['newCount', 'reviewCount', 'exampleTarget', 'dictationTarget', 'spellingTarget'])
-            if (!Number.isInteger(data.settings[key]) || data.settings[key] < 0 || data.settings[key] > 1000) throw Error('备份数量设置无效');
-        if (!Array.isArray(data.settings.reviewDays) || !data.settings.reviewDays.length || data.settings.reviewDays.some(day => !Number.isInteger(day) || day < 1 || day > 365)) throw Error('备份复习间隔无效');
+        for (const key of ['newCount', 'reviewCount', 'listCount', 'problemCount', 'exampleTarget', 'dictationTarget', 'spellingTarget'])
+            if (!Number.isInteger(data.settings[key]) || data.settings[key] < 0 || data.settings[key] > (key.endsWith('Count') ? 10000 : 1000)) throw Error('备份数量设置无效');
+        if (!Array.isArray(data.settings.reviewDays) || !data.settings.reviewDays.length || data.settings.reviewDays.some(day => !Number.isInteger(day) || day < 0 || day > 365)) throw Error('备份复习间隔无效');
+        for (const key of ['randomExtraction', 'allowOverlap', 'reviewDueOnly', 'carryOverCountsInNewCount', 'carryOverPreview']) if (typeof data.settings[key] !== 'boolean') throw Error('备份每日计划开关无效');
+        if (!data.settings.newBookUnits || typeof data.settings.newBookUnits !== 'object' || Array.isArray(data.settings.newBookUnits) || Object.values(data.settings.newBookUnits).some(units => !Array.isArray(units) || units.some(unit => typeof unit !== 'string' || !unit.trim()) || new Set(units).size !== units.length)) throw Error('备份新学单元范围无效');
+        if (!data.settings.defaultBookCounts || typeof data.settings.defaultBookCounts !== 'object' || Array.isArray(data.settings.defaultBookCounts) || Object.values(data.settings.defaultBookCounts).some(value => !Number.isInteger(value) || value < 0 || value > 10000)) throw Error('备份词书配额无效');
         for (const [id, item] of Object.entries(data.records)) {
             if (!item || !['none', 'wrong', 'prone', 'mastered', 'priority'].includes(item.notebook) || !item.counts || !Array.isArray(item.aliases)) throw Error(`单词本记录无效：${id}`);
         }
@@ -270,7 +296,7 @@
         data.backups = Array.isArray(data.backups) ? data.backups.slice(-5) : [];
         return data;
     }
-    const api = {modes, clone, normalize, clean, dateKey, csv, examples, initial, record, shuffle, start, automaticSpeech, markPreviewSpoken, accepted, submit, advance, finish, revealPreview, movePreview, skipMastered, masterWord, validate};
+    const api = {modes, clone, normalize, clean, dateKey, studyDayKey, csv, examples, initial, record, shuffle, start, automaticSpeech, markPreviewSpoken, accepted, submit, advance, finish, revealPreview, movePreview, previewNeedsLayers, skipMastered, masterWord, validate};
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else scope.Engine = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

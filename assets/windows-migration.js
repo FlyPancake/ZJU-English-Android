@@ -1,6 +1,7 @@
 (function (scope) {
     'use strict';
     const E = typeof module !== 'undefined' && module.exports ? require('./engine.js') : scope.Engine;
+    const P = typeof module !== 'undefined' && module.exports ? require('./study-plan.js') : scope.StudyPlan;
     const kindMap = {new: 'new', list_review: 'review', problem_review: 'problem', free: 'free', review: 'review', problem: 'problem'};
     function classify(data) {
         if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
@@ -56,8 +57,19 @@
             return id;
         }
         const settings = study.settings;
+        for (const key of ['listCount', 'problemCount']) if (settings[key] !== undefined) state.settings[key] = Math.min(amount(settings[key]), 10000);
+        for (const key of ['randomExtraction', 'allowOverlap', 'reviewDueOnly', 'carryOverCountsInNewCount', 'carryOverPreview']) {
+            if (settings[key] !== undefined) {
+                if (typeof settings[key] !== 'boolean') throw Error('Windows 每日计划开关无效');
+                state.settings[key] = settings[key];
+            }
+        }
+        if (settings.defaultBookCounts !== undefined) {
+            if (!settings.defaultBookCounts || typeof settings.defaultBookCounts !== 'object' || Array.isArray(settings.defaultBookCounts)) throw Error('Windows 默认配额无效');
+            state.settings.defaultBookCounts = Object.fromEntries(Object.entries(settings.defaultBookCounts).filter(([id]) => catalog.books.some(book => book.id === id)).map(([id, count]) => [id, Math.min(amount(count), 10000)]));
+        }
         for (const [from, to] of [['newCount', 'newCount'], ['exampleCorrectTarget', 'exampleTarget'], ['dictationCorrectTarget', 'dictationTarget'], ['spellingCorrectTarget', 'spellingTarget']]) {
-            if (settings[from] !== undefined) state.settings[to] = Math.min(amount(settings[from]), 1000);
+            if (settings[from] !== undefined) state.settings[to] = Math.min(amount(settings[from]), to.endsWith('Count') ? 10000 : 1000);
         }
         for (const [from, to] of [['fuzzyAnswers', 'fuzzy'], ['exampleFirstLetterHints', 'firstLetter'], ['freeRetryOnWrong', 'retry']]) {
             if (settings[from] !== undefined) {
@@ -67,8 +79,7 @@
         }
         if (settings.reviewDays !== undefined) {
             if (!Array.isArray(settings.reviewDays) || !settings.reviewDays.length || settings.reviewDays.some(value => !Number.isInteger(value) || value < 0 || value > 365)) throw Error('Windows 复习间隔无效');
-            state.settings.reviewDays = settings.reviewDays.map(value => Math.max(1, value));
-            if (settings.reviewDays.includes(0)) warnings.add('Windows 的当天复习间隔 0 天转换为安卓最小间隔 1 天。');
+            state.settings.reviewDays = settings.reviewDays.slice();
         }
         for (const [kind, prefix] of [['new', 'new'], ['review', 'list'], ['problem', 'problem'], ['free', 'free']]) {
             const config = state.settings.modules[kind];
@@ -86,7 +97,8 @@
                 if (!Array.isArray(order) || order.some(mode => !E.modes.includes(mode))) throw Error('Windows 题型顺序无效');
                 config.taskOrder = [...new Set([...order, ...E.modes])];
             }
-            const questionOrder = settings[prefix + 'QuestionOrder'];
+            const rawOrder = settings[prefix + 'QuestionOrder'];
+            const questionOrder = ({unit_random: 'unitRandom', book_random: 'bookRandom'})[rawOrder] || rawOrder;
             if (questionOrder && !['sequential', 'unitRandom', 'bookRandom'].includes(questionOrder)) warnings.add('部分 Windows 随机顺序设置不能对应，使用安卓顺序练习。');
             config.order = ['sequential', 'unitRandom', 'bookRandom'].includes(questionOrder) ? questionOrder : 'sequential';
         }
@@ -96,6 +108,8 @@
         }
         for (const entry of study.words) {
             const id = wordId(entry.word, entry), item = E.record(state, dictionary.get(id));
+            const extracted = time(entry.firstExtractedAt);
+            if (extracted) state.extracted[id] = {date: day(undefined, extracted), book: entry.book || ''};
             if (entry.acceptedAnswers !== undefined && (!Array.isArray(entry.acceptedAnswers) || entry.acceptedAnswers.some(answer => typeof answer !== 'string'))) throw Error('Windows 自定义答案格式无效');
             item.aliases = [...new Set([...item.aliases, ...(entry.acceptedAnswers || []).map(E.normalize).filter(Boolean)])];
         }
@@ -110,14 +124,16 @@
             item.errors = amount(entry.errorCount);
             item.counts = {example: amount(entry.exampleCorrectCount), dictation: amount(entry.dictationCorrectCount), spelling: amount(entry.spellingCorrectCount)};
             item.edited = time(entry.lastEditedAt) || time(entry.lastAnsweredAt);
+            item.lastAnswered = time(entry.lastAnsweredAt);
             if (entry.correctCount && E.modes.every(mode => entry[mode + 'CorrectCount'] === undefined)) warnings.add('只有总答对次数的旧记录未推断各题型次数，原值保留在迁移来源中。');
         }
         for (const entry of study.priorityWords || []) {
             const id = wordId(entry.word || entry), item = E.record(state, dictionary.get(id));
+            state.priorityWords.push(id);
             if (item.notebook === 'none') item.notebook = 'priority';
         }
         function checkList(list) {
-            if (!list || typeof list.id !== 'string' || !list.id || !kindMap[list.kind] || !['active', 'completed', 'ended'].includes(list.status) || !Array.isArray(list.items) || !Array.isArray(list.history) || !Array.isArray(list.tasks)) throw Error('Windows 学习列表格式无效');
+            if (!list || typeof list.id !== 'string' || !list.id || !kindMap[list.kind] || !['active', 'completed', 'ended', 'settled'].includes(list.status) || !Array.isArray(list.items) || !Array.isArray(list.history) || !Array.isArray(list.tasks)) throw Error('Windows 学习列表格式无效');
             list.items.forEach(item => wordId(item.word, {book: item.sourceBook, unit: item.sourceUnit}));
             for (const task of [...list.history, ...list.tasks, ...(list.retries || [])]) {
                 wordId(task.word);
@@ -155,12 +171,17 @@
             for (const item of list.items) {
                 const id = wordId(item.word);
                 if (item.mastered && !notebookIds.has(id)) E.record(state, dictionary.get(id)).notebook = 'mastered';
-                if (item.released || kind === 'free' || (!item.mastered && !E.modes.every(mode => item[mode + 'Complete'] === true))) continue;
+                if (item.released) { learnedDates.delete(id); delete state.extracted[id]; continue; }
+                if (kind === 'free' || (!item.mastered && !E.modes.every(mode => !state.settings.modules[kind].modes.includes(mode) || item[mode + 'Complete'] === true))) continue;
                 const previous = learnedDates.get(id);
                 const stage = Math.min(previous ? previous.stage + (kind === 'review' ? 1 : 0) : 0, state.settings.reviewDays.length - 1);
                 learnedDates.set(id, {date: previous?.date || date, last: date, stage, due: plusDays(date, state.settings.reviewDays[stage])});
             }
             const summary = {id: 'windows-' + list.id, kind, date, words: ids, tasks: [], total: attempts.length, completed: [], counted: [], cursor: 0, phase: 'quiz', preview: 0, previewStage: 0, previewSpoken: [], paused: true, input: '', hint: 0, feedback: null, elapsed: amount(list.activeMilliseconds), correct: attempts.filter(item => item.correct).length, answered: attempts.length, retry: kind === 'free' ? state.settings.retry : true, config: E.clone(state.settings.modules[kind]), created, complete: list.status === 'completed', finished: Math.max(created, ...attempts.map(item => item.time))};
+            summary.status = list.status;
+            summary.releasedWords = list.items.filter(item => item.released).map(item => wordId(item.word));
+            summary.retainedWords = ids.filter(id => !summary.releasedWords.includes(id));
+            summary.sourceBooks = Object.fromEntries(list.items.map(item => [wordId(item.word), item.sourceBook || '']));
             if (list.status !== 'active') state.sessions.push(summary);
             else if (list.id === study.activeListId) {
                 const pending = list.items.filter(item => !item.released && !item.mastered && state.records[wordId(item.word)]?.notebook !== 'mastered');
@@ -169,6 +190,9 @@
                     E.start(state, pending.map(item => dictionary.get(wordId(item.word))), kind, config);
                     const active = state.active;
                     Object.assign(active, {id: summary.id, date, created, elapsed: summary.elapsed, correct: summary.correct, answered: summary.answered, paused: true, input: typeof list.pausedInput === 'string' ? list.pausedInput : ''});
+                    active.sourceBooks = summary.sourceBooks;
+                    active.carriedOverWords = pending.filter(item => item.carriedOver).map(item => wordId(item.word));
+                    active.carryOverPreview = state.settings.carryOverPreview;
                     if (list.phase === 'preview' && kind === 'new') {
                         const cursor = amount(list.previewCursor);
                         if (cursor >= list.items.length) throw Error('Windows 新词预览位置无效');
@@ -200,7 +224,7 @@
         warnings.add('Windows 快捷键、撤销栈、界面外观和未提供的自由练习记录不迁移为安卓功能；提供的原始数据保留在备份迁移来源中。');
         const summary = {notebookRecords: notebook.records.length, learnedWords: Object.keys(state.learned).length, wrong: Object.values(state.records).filter(item => item.notebook === 'wrong').length, prone: Object.values(state.records).filter(item => item.notebook === 'prone').length, mastered: Object.values(state.records).filter(item => item.notebook === 'mastered').length, historicalLists: state.sessions.length, activeWords: state.active?.words.length || 0, activePreview: state.active?.phase === 'preview' ? state.active.preview + 1 : null, attempts: state.attempts.length, correct: state.attempts.filter(item => item.correct).length, elapsed: state.sessions.reduce((sum, item) => sum + item.elapsed, 0) + (state.active?.elapsed || 0), customWords: custom.size};
         state.migration = {version: 1, from: 'windows', importedAt: now, summary, warnings: [...warnings], source: {study, notebook, lists: E.clone(input.lists || [])}};
-        E.validate(state, new Set(dictionary.keys()));
+        P.validate(state, new Set(dictionary.keys()));
         return {state, summary, warnings: [...warnings]};
     }
     const api = {classify, convert, time};

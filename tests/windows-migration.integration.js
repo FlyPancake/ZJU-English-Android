@@ -26,7 +26,8 @@ const server = http.createServer((request, response) => {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const browser = await chromium.launch({executablePath: process.env.KRY_CHROME, headless: true, args: ['--no-sandbox']});
     try {
-        const page = await browser.newPage({viewport: {width: 393, height: 852}});
+        const page = await browser.newPage({viewport: {width: 393, height: 852}, timezoneId: 'Asia/Shanghai'});
+        await page.clock.setFixedTime('2026-10-08T12:00:00+08:00');
         const errors = []; let accept = true;
         page.on('pageerror', error => errors.push(error.message));
         page.on('dialog', dialog => accept ? dialog.accept() : dialog.dismiss());

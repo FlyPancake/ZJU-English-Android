@@ -1,4 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.kry.zjuenglish" android:versionCode="6" android:versionName="1.1.4-android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.kry.zjuenglish" android:versionCode="8" android:versionName="1.2.1">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
     <queries><intent><action android:name="android.intent.action.TTS_SERVICE" /></intent></queries>
     <application android:label="大英默写器 · Z" android:icon="@drawable/icon" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:allowBackup="false" android:usesCleartextTraffic="false" android:supportsRtl="true">
